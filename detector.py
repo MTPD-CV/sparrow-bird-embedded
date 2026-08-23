@@ -11,7 +11,7 @@ import os
 import subprocess
 from dotenv import load_dotenv
 from ultralytics import YOLO
-from flask import Flask, Response, jsonify
+from flask import Flask, Response, jsonify, request
 
 # Load environment variables
 load_dotenv()
@@ -52,10 +52,12 @@ system_stats = {
     "status": "online",
     "sparrows_detected_total": 0,
     "buzzer_active": False,
-    "cpu_temp": "N/A"
+    "cpu_temp": "N/A",
+    "buzzer_mode": "auto"
 }
 
 app = Flask(__name__)
+global_buzzer = None
 
 def get_cpu_temp():
     try:
@@ -72,6 +74,24 @@ def index():
 def stats():
     system_stats["cpu_temp"] = get_cpu_temp()
     return jsonify(system_stats)
+
+@app.route('/api/buzzer', methods=['POST'])
+def control_buzzer():
+    global global_buzzer
+    if global_buzzer is None:
+        return jsonify({"error": "Buzzer not initialized"}), 500
+        
+    data = request.json or {}
+    mode = data.get("mode")
+    
+    if mode == "force_on":
+        global_buzzer.set_manual(True, True)
+        return jsonify({"status": "forced_on"})
+    elif mode == "auto":
+        global_buzzer.set_manual(False, False)
+        return jsonify({"status": "auto_restored"})
+        
+    return jsonify({"error": "Invalid mode"}), 400
 
 def generate_mjpeg():
     global latest_frame, frame_lock
@@ -105,6 +125,7 @@ class BuzzerController:
         self._port = port
         self._is_on = False
         self._last_trigger = 0.0
+        self._manual_override = False
         self._lock = threading.Lock()
         self._serial = None
         
@@ -115,9 +136,29 @@ class BuzzerController:
             except serial.SerialException as e:
                 log.error("Gagal membuka Serial Port %s: %s", self._port, e)
 
+    def set_manual(self, manual: bool, state: bool):
+        global system_stats
+        with self._lock:
+            self._manual_override = manual
+            system_stats["buzzer_mode"] = "manual" if manual else "auto"
+            
+            if manual:
+                if state and not self._is_on:
+                    if self._send("ON"):
+                        self._is_on = True
+                        system_stats["buzzer_active"] = True
+            else:
+                if self._is_on:
+                    if self._send("OFF"):
+                        self._is_on = False
+                        system_stats["buzzer_active"] = False
+
     def update(self, detected: bool) -> None:
         global system_stats
         with self._lock:
+            if self._manual_override:
+                return # AI diabaikan saat Override
+            
             now = time.time()
             if detected and not self._is_on:
                 if (now - self._last_trigger) >= TRIGGER_DELAY_S:
@@ -163,6 +204,8 @@ def main():
         return
 
     buzzer = BuzzerController(ESP32_SERIAL_PORT)
+    global global_buzzer
+    global_buzzer = buzzer
 
     log.info("Membuka sumber kamera/video: %s", CAMERA_SRC)
     cap = cv2.VideoCapture(CAMERA_SRC)
