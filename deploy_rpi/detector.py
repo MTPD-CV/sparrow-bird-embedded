@@ -24,6 +24,7 @@ ESP32_SERIAL_PORT = os.getenv("ESP32_SERIAL_PORT", "/dev/ttyUSB0")
 CAMERA_SRC  = os.getenv("CAMERA_SRC", "0") 
 MODEL_PATH  = os.getenv("MODEL_PATH", "best.pt")
 SHOW_UI     = os.getenv("SHOW_UI", "False").lower() in ("true", "1", "t", "yes")
+API_SECRET_KEY = os.getenv("API_SECRET_KEY", "MATAPADI-SECRET-99X")
 
 if CAMERA_SRC.isdigit():
     CAMERA_SRC = int(CAMERA_SRC)
@@ -69,6 +70,17 @@ def get_cpu_temp():
 @app.route('/')
 def index():
     return jsonify({"message": "Sparrow Embedded System API", "status": "200 OK"})
+
+@app.before_request
+def require_api_key():
+    # Izinkan /stream terbuka (karena diakses via tag <img> HTML) dan rute utama /
+    if request.path in ['/stream', '/']:
+        return
+        
+    api_key = request.headers.get('x-api-key')
+    if api_key != API_SECRET_KEY:
+        log.warning(f"Unauthorized access attempt to {request.path} from {request.remote_addr}")
+        return jsonify({"error": "Unauthorized"}), 401
 
 @app.route('/stats')
 def stats():
