@@ -278,10 +278,10 @@ def main():
                     label  = r.names[cls_id].lower()
                     conf   = float(box.conf[0])
                     
-                    if label == "sparrow" and conf >= CONF_THRESHOLD:
+                    if conf >= CONF_THRESHOLD:
                         detected = True
                         system_stats["sparrows_detected_total"] += 1
-                        log.info("🕊️ DETECTED sparrow conf=%.2f inference_ms=%.1f", conf, elapsed_ms)
+                        log.info("🕊️ DETECTED %s conf=%.2f inference_ms=%.1f", label, conf, elapsed_ms)
                         
                         x1, y1, x2, y2 = map(int, box.xyxy[0])
                         h, w, _ = frame.shape
@@ -290,7 +290,7 @@ def main():
                         x2, y2 = int(x2 * scale_x), int(y2 * scale_y)
                         
                         cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
-                        cv2.putText(frame, f"Sparrow {conf:.2f}", (x1, y1 - 10),
+                        cv2.putText(frame, f"{label} {conf:.2f}", (x1, y1 - 10),
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
                         break
                 if detected:
