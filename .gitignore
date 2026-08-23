@@ -1,0 +1,19 @@
+# File Rahasia & API Key (SANGAT PENTING!)
+.env
+
+# Virtual Environment & Sistem
+.venv/
+__pycache__/
+*.pyc
+
+# Model Raksasa & Dataset YOLO
+*.pt
+runs/
+sparrow/
+sparrow-1/
+dataset_negatif/
+
+# Video & Media Besar
+*.mp4
+*.avi
+*.mkv
