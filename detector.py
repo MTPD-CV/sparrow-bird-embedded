@@ -22,6 +22,7 @@ ENABLE_ESP32 = os.getenv("ENABLE_ESP32", "False").lower() in ("true", "1", "t", 
 ESP32_SERIAL_PORT = os.getenv("ESP32_SERIAL_PORT", "/dev/ttyUSB0")
 CAMERA_SRC  = os.getenv("CAMERA_SRC", "0") 
 MODEL_PATH  = os.getenv("MODEL_PATH", "best.pt")
+SHOW_UI     = os.getenv("SHOW_UI", "False").lower() in ("true", "1", "t", "yes")
 
 # Ubah tipe data untuk CAMERA_SRC jika berupa angka (webcam index)
 if CAMERA_SRC.isdigit():
@@ -140,10 +141,10 @@ def main():
 
             # ✅ Frame skipping — hanya inferensi setiap INFER_INTERVAL_S
             if (now - last_infer_time) < INFER_INTERVAL_S:
-                # Kita tetap harus memproses UI OpenCV agar tidak not-responding
-                cv2.imshow("Deteksi Burung Pipit", frame)
-                if cv2.waitKey(1) & 0xFF == ord('q'):
-                    break
+                if SHOW_UI:
+                    cv2.imshow("Deteksi Burung Pipit", frame)
+                    if cv2.waitKey(1) & 0xFF == ord('q'):
+                        break
                 continue
 
             last_infer_time = now
@@ -193,12 +194,12 @@ def main():
             cv2.putText(frame, fps_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
 
             # Tampilkan hasil di jendela OpenCV
-            cv2.imshow("Deteksi Burung Pipit", frame)
-
-            # Tekan 'q' untuk keluar
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                log.info("Keluar (dihentikan oleh user).")
-                break
+            if SHOW_UI:
+                cv2.imshow("Deteksi Burung Pipit", frame)
+                # Tekan 'q' untuk keluar
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    log.info("Keluar (dihentikan oleh user).")
+                    break
 
     except KeyboardInterrupt:
         log.info("Shutdown signal diterima (Ctrl+C).")
