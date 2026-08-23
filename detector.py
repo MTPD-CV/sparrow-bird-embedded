@@ -264,9 +264,11 @@ def main():
 
             last_infer_time = now
 
+            # NCNN mengharuskan ukuran array mutlak persegi, jika tidak ia akan crash (502)
+            infer_frame = cv2.resize(frame, (INFER_IMGSZ, INFER_IMGSZ))
+            
             t0 = time.perf_counter()
-            # Langsung berikan 'frame' asli, Ultralytics otomatis melakukan LetterBox cerdas
-            results = model(frame, verbose=False, imgsz=INFER_IMGSZ)
+            results = model(infer_frame, verbose=False, imgsz=INFER_IMGSZ)
             elapsed_ms = (time.perf_counter() - t0) * 1000
 
             detected = False
@@ -281,8 +283,11 @@ def main():
                         system_stats["sparrows_detected_total"] += 1
                         log.info("🕊️ DETECTED sparrow conf=%.2f inference_ms=%.1f", conf, elapsed_ms)
                         
-                        # YOLO otomatis mengembalikan koordinat ke ukuran frame asli
                         x1, y1, x2, y2 = map(int, box.xyxy[0])
+                        h, w, _ = frame.shape
+                        scale_x, scale_y = w / INFER_IMGSZ, h / INFER_IMGSZ
+                        x1, y1 = int(x1 * scale_x), int(y1 * scale_y)
+                        x2, y2 = int(x2 * scale_x), int(y2 * scale_y)
                         
                         cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
                         cv2.putText(frame, f"Sparrow {conf:.2f}", (x1, y1 - 10),
