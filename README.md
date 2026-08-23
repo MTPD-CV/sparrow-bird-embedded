@@ -3,6 +3,7 @@
 ![Status](https://img.shields.io/badge/Status-Production%20Ready-success)
 ![Hardware](https://img.shields.io/badge/Hardware-Raspberry%20Pi%20%7C%20ESP32-blue)
 ![AI Framework](https://img.shields.io/badge/AI-YOLOv8%20%7C%20NCNN-orange)
+![Networking](https://img.shields.io/badge/Network-Cloudflare%20Zero%20Trust-black)
 
 Sistem Visi Komputer (*Computer Vision*) produksi yang dioptimasi khusus untuk perangkat *Edge* **Raspberry Pi 4**. Sistem ini menggunakan model kecerdasan buatan **YOLOv8 (NCNN)** untuk mendeteksi hama burung pipit di area persawahan secara *real-time*.
 
@@ -10,7 +11,17 @@ Proyek ini dirancang sebagai sistem **Off-Grid Mandiri 100% (Tenaga Surya)** yan
 
 ---
 
-## 🏗️ Arsitektur Sistem (Hardware & Power)
+## 🏗️ Arsitektur Jaringan (Zero Trust Cloudflare Mesh)
+
+Karena perangkat RPi diletakkan di lapangan menggunakan internet seluler (4G/LTE), IP Publik tidak tersedia akibat *Carrier-Grade NAT* (CGNAT). Sistem ini memecahkan masalah tersebut dengan arsitektur **Zero Trust Mesh Network**.
+
+*   **Cloudflared Daemon:** Berjalan 24/7 di latar belakang Raspberry Pi.
+*   **Tunneling:** RPi membangun lorong rahasia langsung ke *Edge Server* Cloudflare tanpa perlu membuka *port* pada *Router* (Aman dari serangan luar).
+*   **Akses Global:** RPi dapat diakses dari manapun menggunakan domain khusus (`*.matapadi.biz.id`) untuk keperluan *monitoring Dashboard* dan pemeliharaan jarak jauh.
+
+---
+
+## ⚡ Arsitektur Kelistrikan (Hardware)
 
 Sistem ini menggunakan topologi kelistrikan kelas industri berat untuk memastikan tidak ada komponen yang terbakar akibat perbedaan tegangan (9V, 5V, dan 12V).
 
@@ -24,9 +35,9 @@ Sistem ini menggunakan topologi kelistrikan kelas industri berat untuk memastika
     *   Kamera IPcam RTSP (Disuplai oleh Step-Down Buck Converter 9V)
 *   **Sistem Komputasi AI (5V):**
     *   **Otak Utama:** Raspberry Pi 4 (Disuplai oleh Step-Down Buck Converter 5V)
-    *   **Tangan Pekerja:** ESP32 Module (Dihidupkan langsung lewat kabel USB dari Raspberry Pi)
+    *   **Tangan Pekerja:** ESP32 Module (Dihidupkan langsung lewat kabel USB Serial dari Raspberry Pi)
 *   **Sistem Peringatan / Aktuator (12V):**
-    *   Speaker Piezoelektrik 12V (Input tenaga langsung dari MCB 12V, namun sinyal *trigger data* mengambil 3.3V dari Pin ESP32).
+    *   Speaker Piezoelektrik 12V (Input tenaga langsung dari MCB 12V, namun sinyal *trigger data* mengambil 3.3V dari Pin D4 ESP32).
 
 ---
 
@@ -35,9 +46,9 @@ Sistem ini menggunakan topologi kelistrikan kelas industri berat untuk memastika
 Karena alat diletakkan di lapangan terbuka, stabilitas data sangat diutamakan:
 1.  **IPcam** menangkap video sawah dan mengirimkannya ke **Router Advan** via Wi-Fi/LAN.
 2.  **Raspberry Pi** menyedot arus video RTSP tersebut dari Router menggunakan **Kabel LAN** (Untuk mencegah *overheat* pada chip Wi-Fi RPi).
-3.  Model **YOLOv8 (format NCNN)** di dalam Raspberry Pi menganalisis *frame* video dalam hitungan milidetik.
-4.  Jika burung pipit terdeteksi dengan *Confidence Threshold* di atas ambang batas (Sweet Spot), RPi menembakkan pesan teks `ON` lewat **Kabel USB (Serial)** ke ESP32.
-5.  **ESP32** bereaksi instan dan mengalirkan sinyal data 3.3V ke **Speaker 12V** untuk mengusir burung.
+3.  Model **YOLOv8** di dalam Raspberry Pi menganalisis *frame* video dalam hitungan milidetik.
+4.  Jika burung pipit terdeteksi dengan *Confidence Threshold* yang sesuai, RPi menembakkan pesan teks `ON` (beserta `\n`) lewat **Kabel USB Serial** ke ESP32 (`/dev/ttyUSB0`).
+5.  **ESP32** bereaksi instan dan mengalirkan sinyal data 3.3V ke **Speaker 12V** untuk membunyikan alarm/suara predator.
 
 ---
 
@@ -46,13 +57,13 @@ Karena alat diletakkan di lapangan terbuka, stabilitas data sangat diutamakan:
 Semua skrip di dalam proyek ini telah menerapkan prinsip *Clean Code*, *Error Handling* produksi, dan pembatasan beban memori.
 
 1.  **`deploy_rpi/detector.py`** 🚀 **(CORE / PRODUCTION)**
-    Skrip utama yang dijalankan di Raspberry Pi. Menggabungkan pembacaan kamera RTSP, inferensi AI berkecepatan tinggi, dan komunikasi Serial dengan ESP32.
-2.  **`deploy_rpi/.env`** 🔐
-    File konfigurasi lingkungan. Berisi pengaturan alamat RTSP, port USB (`/dev/ttyUSB0`), dan parameter *threshold* AI. *(Tidak diunggah ke Git demi keamanan).*
-3.  **`optimize_model.py`** ⚙️
-    Skrip untuk mengekspor dan mengompresi model dari PyTorch (`.pt`) menjadi format Tencent NCNN. Memangkas waktu inferensi secara radikal di prosesor ARM.
-4.  **`evaluasi.py`** 📊
-    Skrip untuk mengukur tingkat keakuratan (*Confusion Matrix*) dari model yang dilatih.
+    Skrip utama yang dijalankan di Raspberry Pi. Menggabungkan pembacaan kamera RTSP, inferensi AI berkecepatan tinggi, dan komunikasi Serial USB dengan ESP32.
+2.  **`esp32_actuator/esp32_actuator.ino`** 🎛️
+    Firmware C++ untuk dipasang di dalam ESP32. Bertugas menerjemahkan perintah Serial dari RPi menjadi tegangan kelistrikan.
+3.  **`deploy_rpi/.env`** 🔐
+    File konfigurasi lingkungan. Berisi pengaturan alamat RTSP, port USB, dan parameter *threshold* AI. *(Tidak diunggah ke Git demi keamanan).*
+4.  **`web-app-sparrow/`** 🌐
+    (Dalam Pengembangan) - Modul antarmuka web (*Dashboard*) berbasis *Modular Monolith* (Next.js) untuk pemantauan kamera jarak jauh via Cloudflare.
 
 ---
 
@@ -70,13 +81,17 @@ Semua skrip di dalam proyek ini telah menerapkan prinsip *Clean Code*, *Error Ha
     source .venv/bin/activate
     ```
 
-3.  **Instal Library AI:**
+3.  **Instal Library Utama:**
     ```bash
     pip install -r requirements.txt
+    pip install pyserial
     ```
 
-4.  **Konfigurasi Sistem:**
-    Buat file `.env` (bisa menyalin dari `.env.example`) dan sesuaikan alamat RTSP IPcam serta Port USB ESP32 Anda.
+4.  **Izin Akses Serial (Penting):**
+    Pastikan *user* RPi Anda (misal `matapadi`) memiliki izin untuk mengakses perangkat USB.
+    ```bash
+    sudo usermod -a -G dialout matapadi
+    ```
 
 5.  **Jalankan Sistem Penjaga Sawah:**
     ```bash
