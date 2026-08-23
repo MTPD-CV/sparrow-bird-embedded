@@ -17,3 +17,11 @@ dataset_negatif/
 *.mp4
 *.avi
 *.mkv
+
+# AI Models and Datasets
+models/
+datasets/
+runs/
+
+# PlatformIO
+.pio/
