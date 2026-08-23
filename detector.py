@@ -4,7 +4,7 @@ Menggabungkan best practices dari sparow.py + deteksi_burung.py
 dengan semua optimasi untuk embedded ARM deployment.
 """
 import cv2
-import requests
+import serial
 import threading
 import time
 import logging
@@ -19,7 +19,7 @@ load_dotenv()
 # KONFIGURASI DARI .ENV
 # ==============================
 ENABLE_ESP32 = os.getenv("ENABLE_ESP32", "False").lower() in ("true", "1", "t", "yes")
-ESP32_URL   = os.getenv("ESP32_URL", "http://192.168.1.100")
+ESP32_SERIAL_PORT = os.getenv("ESP32_SERIAL_PORT", "/dev/ttyUSB0")
 CAMERA_SRC  = os.getenv("CAMERA_SRC", "0") 
 MODEL_PATH  = os.getenv("MODEL_PATH", "best.pt")
 
@@ -32,8 +32,7 @@ TRIGGER_DELAY_S  = float(os.getenv("TRIGGER_DELAY_S", "3.0"))
 INFER_INTERVAL_S = float(os.getenv("INFER_INTERVAL_S", "0.4"))
 INFER_IMGSZ      = int(os.getenv("INFER_IMGSZ", "320"))
 
-HTTP_TIMEOUT_S   = 1.5    # Timeout HTTP ke ESP32
-MAX_RETRIES      = 2      # Retry HTTP sebelum skip
+# HTTP Timeouts sudah dihapus (Ganti pakai USB Serial)
 
 # ==============================
 # LOGGING TERSTRUKTUR
@@ -49,42 +48,53 @@ log = logging.getLogger("sparrow-detector")
 # STATE MESIN BUZZER (thread-safe)
 # ==============================
 class BuzzerController:
-    def __init__(self, base_url: str):
-        self._url = base_url
+    def __init__(self, port: str):
+        self._port = port
         self._is_on = False
         self._last_trigger = 0.0
         self._lock = threading.Lock()
+        self._serial = None
+        
+        if ENABLE_ESP32:
+            try:
+                self._serial = serial.Serial(self._port, 115200, timeout=1)
+                log.info("Berhasil membuka Serial Port: %s", self._port)
+            except serial.SerialException as e:
+                log.error("Gagal membuka Serial Port %s: %s", self._port, e)
 
     def update(self, detected: bool) -> None:
-        """Kirim sinyal ke ESP32 hanya jika state berubah atau butuh direfresh."""
+        """Kirim sinyal ke ESP32 via kabel USB hanya jika state berubah."""
         with self._lock:
             now = time.time()
             if detected and not self._is_on:
                 if (now - self._last_trigger) >= TRIGGER_DELAY_S:
-                    if self._send("buzzer_on"):
+                    if self._send("ON"):
                         self._is_on = True
                         self._last_trigger = now
             elif not detected and self._is_on:
-                if self._send("buzzer_off"):
+                if self._send("OFF"):
                     self._is_on = False
 
     def _send(self, command: str) -> bool:
-        if not ENABLE_ESP32:
+        if not ENABLE_ESP32 or self._serial is None:
             return True
             
-        for attempt in range(MAX_RETRIES):
-            try:
-                r = requests.get(f"{self._url}/{command}", timeout=HTTP_TIMEOUT_S)
-                log.info("ESP32 command=%s status=%d", command, r.status_code)
-                return r.status_code == 200
-            except requests.exceptions.RequestException as e:
-                log.warning("ESP32 send attempt %d/%d failed: %s", attempt+1, MAX_RETRIES, e)
-        return False
+        try:
+            # Kirim pesan teks dan diakhiri dengan enter (\n)
+            pesan = command + "\n"
+            self._serial.write(pesan.encode('utf-8'))
+            log.info("ESP32 dikirimi sinyal Serial: %s", command)
+            return True
+        except serial.SerialException as e:
+            log.warning("Kabel USB ESP32 terputus atau gagal mengirim: %s", e)
+            return False
 
     def force_off(self) -> None:
         """Dipanggil saat shutdown — pastikan buzzer mati."""
-        self._send("buzzer_off")
+        self._send("OFF")
         self._is_on = False
+        if self._serial:
+            self._serial.close()
 
 # ==============================
 # MAIN DETECTOR
@@ -97,7 +107,7 @@ def main():
         log.error("Gagal memuat model. Apakah file %s ada? Error: %s", MODEL_PATH, e)
         return
 
-    buzzer = BuzzerController(ESP32_URL)
+    buzzer = BuzzerController(ESP32_SERIAL_PORT)
 
     log.info("Membuka sumber kamera/video: %s", CAMERA_SRC)
     cap = cv2.VideoCapture(CAMERA_SRC)
