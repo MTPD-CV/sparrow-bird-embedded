@@ -1,16 +1,17 @@
 """
-detector.py — Production-optimized bird detector for Raspberry Pi 3
-Menggabungkan best practices dari sparow.py + deteksi_burung.py
-dengan semua optimasi untuk embedded ARM deployment.
+detector.py — Production-optimized bird detector for Raspberry Pi 4
+Terintegrasi dengan Cloudflare Tunnels via Flask Micro-Server (Port 8080)
 """
 import cv2
-import requests
+import serial
 import threading
 import time
 import logging
 import os
+import subprocess
 from dotenv import load_dotenv
 from ultralytics import YOLO
+from flask import Flask, Response, jsonify
 
 # Load environment variables
 load_dotenv()
@@ -19,11 +20,11 @@ load_dotenv()
 # KONFIGURASI DARI .ENV
 # ==============================
 ENABLE_ESP32 = os.getenv("ENABLE_ESP32", "False").lower() in ("true", "1", "t", "yes")
-ESP32_URL   = os.getenv("ESP32_URL", "http://192.168.1.100")
+ESP32_SERIAL_PORT = os.getenv("ESP32_SERIAL_PORT", "/dev/ttyUSB0")
 CAMERA_SRC  = os.getenv("CAMERA_SRC", "0") 
 MODEL_PATH  = os.getenv("MODEL_PATH", "best.pt")
+SHOW_UI     = os.getenv("SHOW_UI", "False").lower() in ("true", "1", "t", "yes")
 
-# Ubah tipe data untuk CAMERA_SRC jika berupa angka (webcam index)
 if CAMERA_SRC.isdigit():
     CAMERA_SRC = int(CAMERA_SRC)
 
@@ -31,9 +32,6 @@ CONF_THRESHOLD   = float(os.getenv("CONF_THRESHOLD", "0.45"))
 TRIGGER_DELAY_S  = float(os.getenv("TRIGGER_DELAY_S", "3.0"))
 INFER_INTERVAL_S = float(os.getenv("INFER_INTERVAL_S", "0.4"))
 INFER_IMGSZ      = int(os.getenv("INFER_IMGSZ", "320"))
-
-HTTP_TIMEOUT_S   = 1.5    # Timeout HTTP ke ESP32
-MAX_RETRIES      = 2      # Retry HTTP sebelum skip
 
 # ==============================
 # LOGGING TERSTRUKTUR
@@ -46,50 +44,117 @@ logging.basicConfig(
 log = logging.getLogger("sparrow-detector")
 
 # ==============================
+# GLOBAL STATE (Untuk Web Server)
+# ==============================
+latest_frame = None
+frame_lock = threading.Lock()
+system_stats = {
+    "status": "online",
+    "sparrows_detected_total": 0,
+    "buzzer_active": False,
+    "cpu_temp": "N/A"
+}
+
+app = Flask(__name__)
+
+def get_cpu_temp():
+    try:
+        temp = subprocess.check_output(['vcgencmd', 'measure_temp']).decode('utf-8')
+        return temp.replace("temp=", "").strip()
+    except:
+        return "N/A"
+
+@app.route('/')
+def index():
+    return jsonify({"message": "Sparrow Embedded System API", "status": "200 OK"})
+
+@app.route('/stats')
+def stats():
+    system_stats["cpu_temp"] = get_cpu_temp()
+    return jsonify(system_stats)
+
+def generate_mjpeg():
+    global latest_frame, frame_lock
+    while True:
+        with frame_lock:
+            if latest_frame is None:
+                time.sleep(0.1)
+                continue
+            # Encode frame ke format JPEG dengan kualitas 70% (agar ringan di jaringan 4G)
+            ret, jpeg = cv2.imencode('.jpg', latest_frame, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
+            if not ret:
+                continue
+            frame_bytes = jpeg.tobytes()
+        
+        # Kirim byte stream ke browser
+        yield (b'--frame\r\n'
+               b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+        # Limit frame rate stream ke ~15 FPS agar tidak menyiksa CPU & Jaringan
+        time.sleep(0.06)
+
+@app.route('/stream')
+def stream():
+    return Response(generate_mjpeg(), mimetype='multipart/x-mixed-replace; boundary=frame')
+
+
+# ==============================
 # STATE MESIN BUZZER (thread-safe)
 # ==============================
 class BuzzerController:
-    def __init__(self, base_url: str):
-        self._url = base_url
+    def __init__(self, port: str):
+        self._port = port
         self._is_on = False
         self._last_trigger = 0.0
         self._lock = threading.Lock()
+        self._serial = None
+        
+        if ENABLE_ESP32:
+            try:
+                self._serial = serial.Serial(self._port, 115200, timeout=1)
+                log.info("Berhasil membuka Serial Port: %s", self._port)
+            except serial.SerialException as e:
+                log.error("Gagal membuka Serial Port %s: %s", self._port, e)
 
     def update(self, detected: bool) -> None:
-        """Kirim sinyal ke ESP32 hanya jika state berubah atau butuh direfresh."""
+        global system_stats
         with self._lock:
             now = time.time()
             if detected and not self._is_on:
                 if (now - self._last_trigger) >= TRIGGER_DELAY_S:
-                    if self._send("buzzer_on"):
+                    if self._send("ON"):
                         self._is_on = True
                         self._last_trigger = now
+                        system_stats["buzzer_active"] = True
             elif not detected and self._is_on:
-                if self._send("buzzer_off"):
+                if self._send("OFF"):
                     self._is_on = False
+                    system_stats["buzzer_active"] = False
 
     def _send(self, command: str) -> bool:
-        if not ENABLE_ESP32:
+        if not ENABLE_ESP32 or self._serial is None:
             return True
             
-        for attempt in range(MAX_RETRIES):
-            try:
-                r = requests.get(f"{self._url}/{command}", timeout=HTTP_TIMEOUT_S)
-                log.info("ESP32 command=%s status=%d", command, r.status_code)
-                return r.status_code == 200
-            except requests.exceptions.RequestException as e:
-                log.warning("ESP32 send attempt %d/%d failed: %s", attempt+1, MAX_RETRIES, e)
-        return False
+        try:
+            pesan = command + "\n"
+            self._serial.write(pesan.encode('utf-8'))
+            log.info("ESP32 dikirimi sinyal Serial: %s", command)
+            return True
+        except serial.SerialException as e:
+            log.warning("Kabel USB ESP32 terputus atau gagal mengirim: %s", e)
+            return False
 
     def force_off(self) -> None:
-        """Dipanggil saat shutdown — pastikan buzzer mati."""
-        self._send("buzzer_off")
+        self._send("OFF")
         self._is_on = False
+        if self._serial:
+            self._serial.close()
 
 # ==============================
 # MAIN DETECTOR
 # ==============================
 def main():
+    global latest_frame, frame_lock, system_stats
+
     log.info("Memuat model YOLO dari: %s", MODEL_PATH)
     try:
         model = YOLO(MODEL_PATH)
@@ -97,7 +162,7 @@ def main():
         log.error("Gagal memuat model. Apakah file %s ada? Error: %s", MODEL_PATH, e)
         return
 
-    buzzer = BuzzerController(ESP32_URL)
+    buzzer = BuzzerController(ESP32_SERIAL_PORT)
 
     log.info("Membuka sumber kamera/video: %s", CAMERA_SRC)
     cap = cv2.VideoCapture(CAMERA_SRC)
@@ -105,21 +170,24 @@ def main():
         log.error("Gagal membuka kamera/video. Periksa CAMERA_SRC di .env!")
         return
 
-    # Jika memakai webcam (index numerik), atur resolusi kamera
     if isinstance(CAMERA_SRC, int):
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 
-    log.info("Sistem deteksi burung aktif. Tekan 'q' di jendela video atau Ctrl+C di terminal untuk berhenti.")
+    # Menyalakan FLASK SERVER di Background Thread
+    flask_thread = threading.Thread(target=app.run, kwargs={"host":"0.0.0.0", "port":8080, "debug":False, "use_reloader":False})
+    flask_thread.daemon = True # Agar thread ikut mati jika program utama dihentikan
+    flask_thread.start()
+    log.info("🌐 Web Server API & Video Streaming AKTIF di port 8080")
+
+    log.info("Sistem deteksi burung aktif. Tekan Ctrl+C di terminal untuk berhenti.")
     last_infer_time = 0.0
 
     try:
         while True:
             ret, frame = cap.read()
             if not ret:
-                # Jika input berupa file video (looping)
                 if isinstance(CAMERA_SRC, str):
-                    log.info("Video selesai. Mengulang kembali...")
                     cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
                     continue
                 else:
@@ -128,20 +196,21 @@ def main():
 
             now = time.time()
 
-            # ✅ Frame skipping — hanya inferensi setiap INFER_INTERVAL_S
             if (now - last_infer_time) < INFER_INTERVAL_S:
-                # Kita tetap harus memproses UI OpenCV agar tidak not-responding
-                cv2.imshow("Deteksi Burung Pipit", frame)
-                if cv2.waitKey(1) & 0xFF == ord('q'):
-                    break
+                if SHOW_UI:
+                    cv2.imshow("Deteksi Burung Pipit", frame)
+                    if cv2.waitKey(1) & 0xFF == ord('q'):
+                        break
+                
+                # Kirim frame asli ke Web Streaming meskipun sedang tidak inferensi
+                with frame_lock:
+                    latest_frame = frame.copy()
                 continue
 
             last_infer_time = now
 
-            # ✅ Resize frame untuk mempercepat inferensi (sangat krusial di ARM RPi)
             infer_frame = cv2.resize(frame, (INFER_IMGSZ, INFER_IMGSZ))
-
-            # ✅ Inferensi YOLO
+            
             t0 = time.perf_counter()
             results = model(infer_frame, verbose=False, imgsz=INFER_IMGSZ)
             elapsed_ms = (time.perf_counter() - t0) * 1000
@@ -153,13 +222,12 @@ def main():
                     label  = r.names[cls_id].lower()
                     conf   = float(box.conf[0])
                     
-                    if ("sparrow" in label or "bird" in label) and conf >= CONF_THRESHOLD:
+                    if label == "sparrow" and conf >= CONF_THRESHOLD:
                         detected = True
-                        log.info("🕊️ DETECTED sparrow/bird conf=%.2f inference_ms=%.1f", conf, elapsed_ms)
+                        system_stats["sparrows_detected_total"] += 1
+                        log.info("🕊️ DETECTED sparrow conf=%.2f inference_ms=%.1f", conf, elapsed_ms)
                         
-                        # Ambil bounding box untuk digambar
                         x1, y1, x2, y2 = map(int, box.xyxy[0])
-                        # Mengembalikan skala ke ukuran frame asli
                         h, w, _ = frame.shape
                         scale_x, scale_y = w / INFER_IMGSZ, h / INFER_IMGSZ
                         x1, y1 = int(x1 * scale_x), int(y1 * scale_y)
@@ -172,23 +240,20 @@ def main():
                 if detected:
                     break
 
-            if not detected:
-                log.debug("No detection | inference_ms=%.1f", elapsed_ms)
-
-            # ✅ Kontrol ESP32 (State Machine, bukan flood/spam)
             buzzer.update(detected)
 
-            # Menampilkan FPS Info di layar
-            fps_text = f"FPS Limit: {1/INFER_INTERVAL_S:.1f} | Infer: {elapsed_ms:.1f}ms"
+            fps_text = f"Infer: {elapsed_ms:.1f}ms | Buzzer: {'ON' if buzzer._is_on else 'OFF'}"
             cv2.putText(frame, fps_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
 
-            # Tampilkan hasil di jendela OpenCV
-            cv2.imshow("Deteksi Burung Pipit", frame)
+            # Simpan frame yang sudah ditimpa Bounding Box untuk disiarkan di Web App
+            with frame_lock:
+                latest_frame = frame.copy()
 
-            # Tekan 'q' untuk keluar
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                log.info("Keluar (dihentikan oleh user).")
-                break
+            if SHOW_UI:
+                cv2.imshow("Deteksi Burung Pipit", frame)
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    log.info("Keluar (dihentikan oleh user).")
+                    break
 
     except KeyboardInterrupt:
         log.info("Shutdown signal diterima (Ctrl+C).")
@@ -201,7 +266,8 @@ def main():
             
         try:
             cap.release()
-            cv2.destroyAllWindows()
+            if SHOW_UI:
+                cv2.destroyAllWindows()
         except Exception:
             pass
         log.info("Sistem berhenti. ✅")
