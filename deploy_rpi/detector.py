@@ -49,8 +49,8 @@ log = logging.getLogger("sparrow-detector")
 # ==============================
 # GLOBAL STATE (Untuk Web Server)
 # ==============================
-latest_frame = None
-frame_lock = threading.Lock()
+latest_jpeg = None
+jpeg_lock = threading.Lock()
 system_stats = {
     "status": "online",
     "sparrows_detected_total": 0,
@@ -108,17 +108,14 @@ def control_buzzer():
     return jsonify({"error": "Invalid mode"}), 400
 
 def generate_mjpeg():
-    global latest_frame, frame_lock
+    """Generator MJPEG — Flask thread hanya membaca bytes, TANPA memanggil OpenCV."""
+    global latest_jpeg, jpeg_lock
     while True:
-        with frame_lock:
-            if latest_frame is None:
+        with jpeg_lock:
+            if latest_jpeg is None:
                 time.sleep(0.1)
                 continue
-            # Encode frame ke format JPEG dengan kualitas 70% (agar ringan di jaringan 4G)
-            ret, jpeg = cv2.imencode('.jpg', latest_frame, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
-            if not ret:
-                continue
-            frame_bytes = jpeg.tobytes()
+            frame_bytes = latest_jpeg
         
         # Kirim byte stream ke browser
         yield (b'--frame\r\n'
@@ -209,7 +206,7 @@ class BuzzerController:
 # MAIN DETECTOR
 # ==============================
 def main():
-    global latest_frame, frame_lock, system_stats
+    global latest_jpeg, jpeg_lock, system_stats
 
     log.info("Memuat model YOLO dari: %s", MODEL_PATH)
     try:
@@ -263,9 +260,11 @@ def main():
                     if cv2.waitKey(1) & 0xFF == ord('q'):
                         break
                 
-                # Kirim frame asli ke Web Streaming meskipun sedang tidak inferensi
-                with frame_lock:
-                    latest_frame = frame.copy()
+                # Encode JPEG di main thread (aman dari FFmpeg threading conflict)
+                ret_enc, jpeg = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
+                if ret_enc:
+                    with jpeg_lock:
+                        latest_jpeg = jpeg.tobytes()
                 continue
 
             last_infer_time = now
@@ -307,9 +306,11 @@ def main():
             fps_text = f"Infer: {elapsed_ms:.1f}ms | Buzzer: {'ON' if buzzer._is_on else 'OFF'}"
             cv2.putText(frame, fps_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
 
-            # Simpan frame yang sudah ditimpa Bounding Box untuk disiarkan di Web App
-            with frame_lock:
-                latest_frame = frame.copy()
+            # Encode JPEG di main thread dan simpan untuk Web Streaming
+            ret_enc, jpeg = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
+            if ret_enc:
+                with jpeg_lock:
+                    latest_jpeg = jpeg.tobytes()
 
             if SHOW_UI:
                 cv2.imshow("Deteksi Burung Pipit", frame)
