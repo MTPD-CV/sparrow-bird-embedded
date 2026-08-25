@@ -13,7 +13,8 @@ from dotenv import load_dotenv
 from ultralytics import YOLO
 from flask import Flask, Response, jsonify, request
 
-
+# Wajib untuk RTSP: Gunakan TCP agar video tidak smearing/tearing (bebas dari UDP packet loss)
+os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp|fflags;nobuffer|flags;low_delay"
 
 # Load environment variables
 load_dotenv()
@@ -279,14 +280,16 @@ def main():
                     last_jpeg_time = now
                 continue
 
-            last_infer_time = now
-
             # NCNN mengharuskan ukuran array mutlak persegi, jika tidak ia akan crash (502)
             infer_frame = cv2.resize(frame, (INFER_IMGSZ, INFER_IMGSZ))
             
             t0 = time.perf_counter()
             results = model(infer_frame, verbose=False, imgsz=INFER_IMGSZ)
             elapsed_ms = (time.perf_counter() - t0) * 1000
+            
+            # PENTING: Update waktu TERAKHIR inference agar loop selanjutnya membaca frame dengan CEPAT
+            # untuk membuang (flush) frame-frame lama di buffer OpenCV yang terakumulasi selama inference.
+            last_infer_time = time.time()
 
             detected = False
             for r in results:
