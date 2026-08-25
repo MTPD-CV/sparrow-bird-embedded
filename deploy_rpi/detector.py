@@ -240,6 +240,8 @@ def main():
 
     log.info("Sistem deteksi burung aktif. Tekan Ctrl+C di terminal untuk berhenti.")
     last_infer_time = 0.0
+    last_jpeg_time = 0.0
+    JPEG_INTERVAL_S = 0.1  # Max 10 FPS untuk streaming
 
     try:
         while True:
@@ -260,11 +262,13 @@ def main():
                     if cv2.waitKey(1) & 0xFF == ord('q'):
                         break
                 
-                # Encode JPEG di main thread (aman dari FFmpeg threading conflict)
-                ret_enc, jpeg = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
-                if ret_enc:
-                    with jpeg_lock:
-                        latest_jpeg = jpeg.tobytes()
+                # BATASI ENCODE JPEG MAX 10 FPS AGAR LOOP BISA MEMBUANG FRAME LAMA DGN CEPAT
+                if (now - last_jpeg_time) >= JPEG_INTERVAL_S:
+                    ret_enc, jpeg = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
+                    if ret_enc:
+                        with jpeg_lock:
+                            latest_jpeg = jpeg.tobytes()
+                    last_jpeg_time = now
                 continue
 
             last_infer_time = now
@@ -307,10 +311,12 @@ def main():
             cv2.putText(frame, fps_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
 
             # Encode JPEG di main thread dan simpan untuk Web Streaming
-            ret_enc, jpeg = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
-            if ret_enc:
-                with jpeg_lock:
-                    latest_jpeg = jpeg.tobytes()
+            if (now - last_jpeg_time) >= JPEG_INTERVAL_S:
+                ret_enc, jpeg = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
+                if ret_enc:
+                    with jpeg_lock:
+                        latest_jpeg = jpeg.tobytes()
+                last_jpeg_time = now
 
             if SHOW_UI:
                 cv2.imshow("Deteksi Burung Pipit", frame)
