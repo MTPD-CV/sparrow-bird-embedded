@@ -248,11 +248,19 @@ def main():
             ret, frame = cap.read()
             if not ret:
                 if isinstance(CAMERA_SRC, str):
-                    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-                    continue
+                    if CAMERA_SRC.startswith("rtsp://") or CAMERA_SRC.startswith("http://"):
+                        log.warning("Koneksi RTSP terputus! Mencoba reconnect dalam 2 detik...")
+                        time.sleep(2)
+                        cap.release()
+                        cap = cv2.VideoCapture(CAMERA_SRC)
+                        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                    else:
+                        # Ini file video lokal (misal: sparow.mp4), loop kembali ke awal
+                        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
                 else:
-                    log.warning("Kamera terputus.")
+                    log.warning("Kamera USB terputus.")
                     break
+                continue
 
             now = time.time()
 
