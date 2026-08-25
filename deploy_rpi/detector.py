@@ -13,6 +13,9 @@ from dotenv import load_dotenv
 from ultralytics import YOLO
 from flask import Flask, Response, jsonify, request
 
+# Optimasi RTSP: Paksa FFmpeg menggunakan TCP dan matikan buffering untuk latensi minimal
+os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp|fflags;nobuffer|flags;low_delay"
+
 # Load environment variables
 load_dotenv()
 
@@ -203,6 +206,51 @@ class BuzzerController:
             self._serial.close()
 
 # ==============================
+# THREADED RTSP FRAME GRABBER (Anti-Lag)
+# ==============================
+class RTSPCapture:
+    """
+    Membaca frame dari kamera RTSP di thread terpisah secara terus-menerus.
+    Ini memastikan buffer internal OpenCV selalu dikosongkan,
+    sehingga pemanggil selalu mendapatkan frame TERBARU.
+    """
+    def __init__(self, src):
+        self.cap = cv2.VideoCapture(src, cv2.CAP_FFMPEG)
+        self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        self._lock = threading.Lock()
+        self._frame = None
+        self._ret = False
+        self._running = True
+        self._thread = threading.Thread(target=self._reader, daemon=True)
+        self._thread.start()
+
+    def _reader(self):
+        """Thread yang terus-menerus membaca (dan membuang) frame lama."""
+        while self._running:
+            ret, frame = self.cap.read()
+            with self._lock:
+                self._ret = ret
+                self._frame = frame
+
+    def read(self):
+        """Mengembalikan frame paling baru yang tersedia."""
+        with self._lock:
+            if self._frame is None:
+                return False, None
+            return self._ret, self._frame.copy()
+
+    def isOpened(self):
+        return self.cap.isOpened()
+
+    def set(self, prop, val):
+        return self.cap.set(prop, val)
+
+    def release(self):
+        self._running = False
+        self._thread.join(timeout=2)
+        self.cap.release()
+
+# ==============================
 # MAIN DETECTOR
 # ==============================
 def main():
@@ -220,7 +268,13 @@ def main():
     global_buzzer = buzzer
 
     log.info("Membuka sumber kamera/video: %s", CAMERA_SRC)
-    cap = cv2.VideoCapture(CAMERA_SRC)
+    
+    # Gunakan RTSPCapture (threaded) untuk sumber jaringan agar latensi minimal
+    if isinstance(CAMERA_SRC, str):
+        cap = RTSPCapture(CAMERA_SRC)
+    else:
+        cap = cv2.VideoCapture(CAMERA_SRC)
+    
     if not cap.isOpened():
         log.error("Gagal membuka kamera/video. Periksa CAMERA_SRC di .env!")
         return
