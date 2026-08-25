@@ -13,8 +13,9 @@ from dotenv import load_dotenv
 from ultralytics import YOLO
 from flask import Flask, Response, jsonify, request
 
-# Optimasi RTSP: Paksa FFmpeg menggunakan TCP dan matikan buffering untuk latensi minimal
-os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp|fflags;nobuffer|flags;low_delay"
+# Optimasi RTSP: Paksa FFmpeg menggunakan TCP, matikan buffering, dan matikan internal threading
+# threads;1 mencegah crash 'async_lock assertion' saat diakses dari thread eksternal
+os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp|fflags;nobuffer|flags;low_delay|threads;1"
 
 # Load environment variables
 load_dotenv()
@@ -215,7 +216,7 @@ class RTSPCapture:
     sehingga pemanggil selalu mendapatkan frame TERBARU.
     """
     def __init__(self, src):
-        self.cap = cv2.VideoCapture(src, cv2.CAP_FFMPEG)
+        self.cap = cv2.VideoCapture(src)
         self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         self._lock = threading.Lock()
         self._frame = None
